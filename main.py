@@ -43,10 +43,12 @@ SUPER_NAME_KEYWORDS = ["سوبر", "super", "Super", "SUPER"]
     SEND_TEMPLATE,
     SELECT_TARGETS,
     SET_DELAY,
+    CHOOSE_MODE,
     SUPER_SEND_CONTENT,
     SUPER_SET_DELAY,
+    SUPER_CHOOSE_MODE,
     PAUSE_INPUT,
-) = range(11)
+) = range(12)
 
 
 def init_db():
@@ -259,11 +261,10 @@ account_mgr = AccountManager()
 
 class SuperSearch:
     @staticmethod
-    async def search_by_name(client: TelegramClient, limit: int = 500):
+    async def search_by_name(client: TelegramClient):
         results = []
         try:
-            dialogs = await client.get_dialogs(limit=limit)
-            for dialog in dialogs:
+            async for dialog in client.iter_dialogs():
                 if not is_group(dialog):
                     continue
                 name = dialog.name or ""
@@ -280,12 +281,11 @@ class SuperSearch:
         return results
 
     @staticmethod
-    async def search_in_messages(client: TelegramClient, limit: int = 300,
-                                 messages_to_check: int = 100):
+    async def search_in_messages(client: TelegramClient,
+                                 messages_to_check: int = 200):
         results = []
         try:
-            dialogs = await client.get_dialogs(limit=limit)
-            for dialog in dialogs:
+            async for dialog in client.iter_dialogs():
                 if not is_group(dialog):
                     continue
                 name = dialog.name or ""
@@ -324,7 +324,7 @@ class Publisher:
     async def publish_to_target(client: TelegramClient, target,
                                 messages: List[Dict], delay: int,
                                 account_id: int, user_id: int,
-                                job_id: int = None):
+                                job_id: int = None, mode: str = "once"):
         sent = 0
         failed = 0
 
@@ -342,20 +342,8 @@ class Publisher:
                 else:
                     peer = await client.get_entity(int(target))
             except Exception as e2:
-                logging.error(f"second attempt failed for {target}: {e2}")
-                try:
-                    from telethon.tl.functions.messages import ImportChatInviteRequest
-                    if isinstance(target, str) and "joinchat/" in target:
-                        invite_hash = target.split("joinchat/")[-1].strip("/")
-                        result = await client(ImportChatInviteRequest(invite_hash))
-                        peer = result.chats[0]
-                    elif isinstance(target, str) and "+" in target:
-                        invite_hash = target.split("+")[-1].strip("/")
-                        result = await client(ImportChatInviteRequest(invite_hash))
-                        peer = result.chats[0]
-                except Exception as e3:
-                    logging.error(f"third attempt failed for {target}: {e3}")
-                    return 0, len(messages)
+                logging.error(f"second attempt failed: {e2}")
+                return 0, len(messages)
 
         if peer is None:
             return 0, len(messages)
@@ -365,82 +353,90 @@ class Publisher:
         except Exception:
             pass
 
-        total = len(messages)
-        i = 0
-        batch_count = 0
+        async def send_round():
+            nonlocal sent, failed
+            total = len(messages)
+            i = 0
+            batch_count = 0
+            while i < total:
+                if job_id is not None:
+                    if not await check_pause(job_id):
+                        return False
+                batch = messages[i:i + 2]
+                try:
+                    await anti_ban.human_delay()
+                    if len(batch) == 2:
+                        msg1, msg2 = batch
+                        try:
+                            if msg1["media_type"] == "text":
+                                await client.send_message(peer, msg1["content"])
+                            else:
+                                await client.send_file(peer, msg1["media_file_id"],
+                                                      caption=msg1["content"] or "")
+                            sent += 1
+                            update_stats(user_id, True)
+                        except Exception as e:
+                            failed += 1
+                            update_stats(user_id, False)
+                            logging.error(f"send msg1 error: {e}")
 
-        while i < total:
-            if job_id is not None:
-                if not await check_pause(job_id):
+                        await asyncio.sleep(random.uniform(0.8, 2.0))
+
+                        try:
+                            if msg2["media_type"] == "text":
+                                await client.send_message(peer, msg2["content"])
+                            else:
+                                await client.send_file(peer, msg2["media_file_id"],
+                                                      caption=msg2["content"] or "")
+                            sent += 1
+                            update_stats(user_id, True)
+                        except Exception as e:
+                            failed += 1
+                            update_stats(user_id, False)
+                            logging.error(f"send msg2 error: {e}")
+                    else:
+                        msg1 = batch[0]
+                        try:
+                            if msg1["media_type"] == "text":
+                                await client.send_message(peer, msg1["content"])
+                            else:
+                                await client.send_file(peer, msg1["media_file_id"],
+                                                      caption=msg1["content"] or "")
+                            sent += 1
+                            update_stats(user_id, True)
+                        except Exception as e:
+                            failed += 1
+                            update_stats(user_id, False)
+                            logging.error(f"send msg error: {e}")
+                    i += 2
+                    batch_count += 1
+                    if i < total:
+                        await anti_ban.wait_before_send(account_id, peer, delay)
+                    if batch_count > 0 and batch_count % 10 == 0:
+                        await anti_ban.rest()
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 10)
+                except Exception as e:
+                    failed += len(batch)
+                    update_stats(user_id, False)
+                    logging.error(f"batch error: {e}")
+                    i += 2
+            return True
+
+        if mode == "once":
+            await send_round()
+            return sent, failed
+        else:
+            while True:
+                if job_id is not None:
+                    if not await check_pause(job_id):
+                        return sent, failed
+                ok = await send_round()
+                if not ok:
                     return sent, failed
-
-            batch = messages[i:i + 2]
-            try:
-                await anti_ban.human_delay()
-
-                if len(batch) == 2:
-                    msg1, msg2 = batch
-                    try:
-                        if msg1["media_type"] == "text":
-                            await client.send_message(peer, msg1["content"])
-                        else:
-                            await client.send_file(peer, msg1["media_file_id"],
-                                                  caption=msg1["content"] or "")
-                        sent += 1
-                        update_stats(user_id, True)
-                    except Exception as e:
-                        failed += 1
-                        update_stats(user_id, False)
-                        logging.error(f"send msg1 error: {e}")
-
-                    await asyncio.sleep(random.uniform(0.8, 2.0))
-
-                    try:
-                        if msg2["media_type"] == "text":
-                            await client.send_message(peer, msg2["content"])
-                        else:
-                            await client.send_file(peer, msg2["media_file_id"],
-                                                  caption=msg2["content"] or "")
-                        sent += 1
-                        update_stats(user_id, True)
-                    except Exception as e:
-                        failed += 1
-                        update_stats(user_id, False)
-                        logging.error(f"send msg2 error: {e}")
-
-                else:
-                    msg1 = batch[0]
-                    try:
-                        if msg1["media_type"] == "text":
-                            await client.send_message(peer, msg1["content"])
-                        else:
-                            await client.send_file(peer, msg1["media_file_id"],
-                                                  caption=msg1["content"] or "")
-                        sent += 1
-                        update_stats(user_id, True)
-                    except Exception as e:
-                        failed += 1
-                        update_stats(user_id, False)
-                        logging.error(f"send msg error: {e}")
-
-                i += 2
-                batch_count += 1
-
-                if i < total:
-                    await anti_ban.wait_before_send(account_id, peer, delay)
-
-                if batch_count > 0 and batch_count % 10 == 0:
-                    await anti_ban.rest()
-
-            except FloodWaitError as e:
-                await asyncio.sleep(e.seconds + 10)
-            except Exception as e:
-                failed += len(batch)
-                update_stats(user_id, False)
-                logging.error(f"batch error: {e}")
-                i += 2
-
-        return sent, failed
+                if job_id is not None:
+                    if not await check_pause(job_id):
+                        return sent, failed
 
 
 def main_menu_kb():
@@ -822,24 +818,48 @@ async def receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ أرسل رقماً صحيحاً.")
         return SET_DELAY
     context.user_data["pub_delay"] = delay
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1️⃣ مرة واحدة", callback_data="mode_once")],
+        [InlineKeyboardButton("🔄 تكرار لانهائي", callback_data="mode_loop")]
+    ])
+    await update.message.reply_text(
+        "🔄 اختر نمط النشر:\n\n"
+        "1️⃣ مرة واحدة: كل كروب يستلم الكليشة مرة\n"
+        "🔄 تكرار لانهائي: يستمر بالإرسال حتى الإيقاف",
+        reply_markup=kb
+    )
+    return CHOOSE_MODE
+
+
+async def choose_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    mode = "once" if q.data == "mode_once" else "loop"
+    context.user_data["pub_mode"] = mode
+
     n_msgs = len(context.user_data["pub_messages"])
     n_targets = len(context.user_data["pub_targets"])
+    delay = context.user_data["pub_delay"]
+    mode_str = "مرة واحدة" if mode == "once" else "🔄 تكرار لانهائي"
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ تأكيد وبدء النشر", callback_data="confirm_publish")],
         [InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]
     ])
-    await update.message.reply_text(
+    await q.edit_message_text(
         f"📋 تأكيد العملية\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📝 عدد الرسائل: {n_msgs}\n"
         f"🎯 عدد الأهداف: {n_targets}\n"
         f"⏱ التأخير: {delay} ثانية\n"
+        f"🔄 النمط: {mode_str}\n"
         f"🛡 الحماية الذكية: مفعّلة\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"هل تريد البدء؟",
         reply_markup=kb
     )
-    return SET_DELAY
+    return CHOOSE_MODE
 
 
 async def confirm_publish_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -851,6 +871,8 @@ async def confirm_publish_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     messages = context.user_data["pub_messages"]
     targets = context.user_data["pub_targets"]
     delay = context.user_data["pub_delay"]
+    mode = context.user_data.get("pub_mode", "once")
+
     acc = db_exec("SELECT * FROM accounts WHERE id=?", (acc_id,), fetch=True)
     if not acc:
         await q.edit_message_text("❌ الحساب غير موجود!", reply_markup=back_kb())
@@ -868,6 +890,8 @@ async def confirm_publish_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("⏹ إيقاف نهائي", callback_data=f"stop_{job_id}")]
     ])
 
+    mode_str = "مرة واحدة" if mode == "once" else "🔄 تكرار لانهائي"
+
     await q.edit_message_text(
         f"🚀 بدأ النشر\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -875,20 +899,21 @@ async def confirm_publish_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"📝 الرسائل: {len(messages)}\n"
         f"🎯 الأهداف: {len(targets)}\n"
         f"⏱ التأخير: {delay} ثانية\n"
+        f"🔄 النمط: {mode_str}\n"
         f"🆔 رقم المهمة: {job_id}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⏳ جاري التنفيذ...",
         reply_markup=control_kb
     )
     asyncio.create_task(
-        run_publish_task(q.message.chat_id, user["id"], acc, messages, targets, delay, job_id)
+        run_publish_task(q.message.chat_id, user["id"], acc, messages, targets, delay, mode, job_id)
     )
     return MAIN_MENU
 
 
 async def run_publish_task(chat_id: int, user_id: int, acc: dict,
                             messages: List[Dict], targets: List[str],
-                            delay: int, job_id: int = None):
+                            delay: int, mode: str = "once", job_id: int = None):
     try:
         client = await account_mgr.get_client(acc["id"], acc["session_string"])
         if not client:
@@ -915,15 +940,13 @@ async def run_publish_task(chat_id: int, user_id: int, acc: dict,
                         chat_id,
                         f"⏹ تم إيقاف النشر نهائياً\n"
                         f"✅ رسائل ناجحة: {total_sent}\n"
-                        f"❌ رسائل فاشلة: {total_failed}\n"
-                        f"🎯 أهداف نجحت: {success_targets}\n"
-                        f"🚫 أهداف فشلت: {failed_targets}"
+                        f"❌ رسائل فاشلة: {total_failed}"
                     )
                     del running_jobs[job_id]
                     return
 
             sent, failed = await Publisher.publish_to_target(
-                client, t, messages, delay, acc["id"], user_id, job_id
+                client, t, messages, delay, acc["id"], user_id, job_id, mode
             )
             total_sent += sent
             total_failed += failed
@@ -1151,39 +1174,80 @@ async def super_receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError:
         await update.message.reply_text("❌ أرسل رقماً صحيحاً (5 أو أكثر).")
         return SUPER_SET_DELAY
+    context.user_data["super_delay"] = delay
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1️⃣ مرة واحدة", callback_data="super_mode_once")],
+        [InlineKeyboardButton("🔄 تكرار لانهائي", callback_data="super_mode_loop")]
+    ])
+    await update.message.reply_text(
+        "🔄 اختر نمط النشر:\n\n"
+        "1️⃣ مرة واحدة: كل مجموعة تستلم الكليشة مرة\n"
+        "🔄 تكرار لانهائي: يستمر بالإرسال حتى الإيقاف",
+        reply_markup=kb
+    )
+    return SUPER_CHOOSE_MODE
+
+
+async def super_choose_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    mode = "once" if q.data == "super_mode_once" else "loop"
     acc_id = context.user_data["super_account_id"]
     messages = context.user_data["super_messages"]
-    user_id_tg = update.effective_user.id
+    delay = context.user_data["super_delay"]
+    user_id_tg = q.from_user.id
     user = get_user(user_id_tg)
     acc = db_exec("SELECT * FROM accounts WHERE id=?", (acc_id,), fetch=True)
     if not acc:
-        await update.message.reply_text("❌ الحساب غير موجود!", reply_markup=back_kb())
+        await q.edit_message_text("❌ الحساب غير موجود!", reply_markup=back_kb())
         return MAIN_MENU
     acc = acc[0]
-    status_msg = await update.message.reply_text(
-        "🔍 جاري البحث الذكي...\n\n"
-        "⏳ المرحلة 1: البحث بالاسم..."
+
+    job_id = db_exec(
+        "INSERT INTO running_jobs (chat_id, user_id, account_id) VALUES (?,?,?)",
+        (q.message.chat_id, user["id"], acc_id)
+    )
+    running_jobs[job_id] = {"status": "running", "pause_until": None}
+
+    control_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏸ إيقاف مؤقت", callback_data=f"pause_{job_id}")],
+        [InlineKeyboardButton("⏹ إيقاف نهائي", callback_data=f"stop_{job_id}")]
+    ])
+
+    mode_str = "مرة واحدة" if mode == "once" else "🔄 تكرار لانهائي"
+
+    await q.edit_message_text(
+        f"⭐ بدأ النشر الذكي\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 الحساب: {acc['name']}\n"
+        f"📝 الرسائل: {len(messages)}\n"
+        f"⏱ التأخير: {delay} ثانية\n"
+        f"🔄 النمط: {mode_str}\n"
+        f"🆔 رقم المهمة: {job_id}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 جاري البحث والتنفيذ...",
+        reply_markup=control_kb
     )
     asyncio.create_task(
-        run_super_task(status_msg.chat_id, user["id"], acc, messages, delay)
+        run_super_task(q.message.chat_id, user["id"], acc, messages, delay, mode, job_id)
     )
     return MAIN_MENU
 
 
 async def run_super_task(chat_id: int, user_id: int, acc: dict,
-                          messages: List[Dict], delay: int):
+                          messages: List[Dict], delay: int,
+                          mode: str = "once", job_id: int = None):
     try:
         client = await account_mgr.get_client(acc["id"], acc["session_string"])
         if not client:
             await send_msg(chat_id, "❌ فشل الاتصال بالحساب!")
+            if job_id in running_jobs:
+                del running_jobs[job_id]
             return
 
         await send_msg(chat_id, "🔍 المرحلة 1: البحث بالاسم...")
         name_results = await SuperSearch.search_by_name(client)
-        await send_msg(
-            chat_id,
-            f"✅ تم العثور على {len(name_results)} مجموعة باسم سوبر"
-        )
+        await send_msg(chat_id, f"✅ باسم سوبر: {len(name_results)}")
 
         await send_msg(
             chat_id,
@@ -1191,10 +1255,7 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
             "⏳ (قد يستغرق وقتاً طويلاً)"
         )
         msg_results = await SuperSearch.search_in_messages(client)
-        await send_msg(
-            chat_id,
-            f"✅ تم العثور على {len(msg_results)} مجموعة بناءً على الرسائل"
-        )
+        await send_msg(chat_id, f"✅ بناءً على الرسائل: {len(msg_results)}")
 
         all_targets = {}
         for r in name_results + msg_results:
@@ -1203,12 +1264,16 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
 
         if not targets:
             await send_msg(chat_id, "❌ لم يتم العثور على أي مجموعة!")
+            if job_id in running_jobs:
+                del running_jobs[job_id]
             return
 
         await send_msg(
             chat_id,
-            f"📊 إجمالي المجموعات: {len(targets)}\n\n"
-            f"⏳ جاري بدء النشر... (سيستمر حتى النهاية)"
+            f"📊 إجمالي المجموعات: {len(targets)}\n"
+            f"📝 عدد الرسائل في الكليشة: {len(messages)}\n"
+            f"🔄 النمط: {'مرة واحدة' if mode == 'once' else '🔄 تكرار لانهائي'}\n\n"
+            f"⏳ جاري بدء النشر..."
         )
 
         total_sent = 0
@@ -1217,10 +1282,21 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
         failed_targets = 0
 
         for i, target in enumerate(targets, 1):
+            if job_id is not None and job_id in running_jobs:
+                if running_jobs[job_id]["status"] == "stopped":
+                    await send_msg(
+                        chat_id,
+                        f"⏹ تم إيقاف النشر نهائياً\n"
+                        f"📨 رسائل ناجحة: {total_sent}\n"
+                        f"📭 رسائل فاشلة: {total_failed}"
+                    )
+                    del running_jobs[job_id]
+                    return
+
             try:
                 peer_entity = await client.get_entity(target["id"])
                 sent, failed = await Publisher.publish_to_target(
-                    client, peer_entity, messages, delay, acc["id"], user_id
+                    client, peer_entity, messages, delay, acc["id"], user_id, job_id, mode
                 )
                 total_sent += sent
                 total_failed += failed
@@ -1254,8 +1330,12 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
             f"📭 رسائل فاشلة: {total_failed}\n"
             f"━━━━━━━━━━━━━━━━━━━"
         )
+        if job_id in running_jobs:
+            del running_jobs[job_id]
     except Exception as e:
         await send_msg(chat_id, f"❌ خطأ: {e}")
+        if job_id in running_jobs:
+            del running_jobs[job_id]
 
 
 async def stats_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1334,8 +1414,10 @@ def main():
                 CallbackQueryHandler(start_publish_cb, pattern="^start_publish$"),
                 CallbackQueryHandler(select_account_cb, pattern="^pub_acc_"),
                 CallbackQueryHandler(confirm_publish_cb, pattern="^confirm_publish$"),
+                CallbackQueryHandler(choose_mode_cb, pattern="^mode_"),
                 CallbackQueryHandler(super_mode_cb, pattern="^super_mode$"),
                 CallbackQueryHandler(super_select_account_cb, pattern="^super_acc_"),
+                CallbackQueryHandler(super_choose_mode_cb, pattern="^super_mode_"),
                 CallbackQueryHandler(stats_cb, pattern="^stats$"),
                 CallbackQueryHandler(pause_job_cb, pattern="^pause_"),
                 CallbackQueryHandler(stop_job_cb, pattern="^stop_"),
@@ -1370,6 +1452,10 @@ def main():
             ],
             SET_DELAY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_delay),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            CHOOSE_MODE: [
+                CallbackQueryHandler(choose_mode_cb, pattern="^mode_"),
                 CallbackQueryHandler(confirm_publish_cb, pattern="^confirm_publish$"),
                 CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
             ],
@@ -1379,6 +1465,10 @@ def main():
             ],
             SUPER_SET_DELAY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, super_receive_delay),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            SUPER_CHOOSE_MODE: [
+                CallbackQueryHandler(super_choose_mode_cb, pattern="^super_mode_"),
                 CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
             ],
             PAUSE_INPUT: [
