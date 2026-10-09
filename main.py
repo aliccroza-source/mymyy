@@ -4,6 +4,7 @@ import random
 import os
 import re
 import logging
+import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
@@ -48,7 +49,16 @@ SUPER_NAME_KEYWORDS = ["سوبر", "super", "Super", "SUPER"]
     SUPER_SET_DELAY,
     SUPER_CHOOSE_MODE,
     PAUSE_INPUT,
-) = range(13)
+    PRESET_MENU,
+    PRESET_ADD_NAME,
+    PRESET_ADD_TYPE,
+    PRESET_ADD_TARGETS,
+    PRESET_ADD_CONTENT,
+    PRESET_ADD_DELAY,
+    PRESET_ADD_MODE,
+    PRESET_VIEW,
+    PRESET_RUN_SELECT_ACCOUNT,
+) = range(21)
 
 
 def init_db():
@@ -105,6 +115,17 @@ def init_db():
         pause_until TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS presets (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        name TEXT,
+        type TEXT,
+        targets TEXT,
+        messages TEXT,
+        delay INTEGER,
+        mode TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """)
     conn.commit()
     conn.close()
@@ -150,11 +171,8 @@ def update_stats(user_id, success=True):
 
 class AntiBan:
     async def wait_before_send(self, account_id, peer, base_delay):
-        jitter = base_delay * random.uniform(0.6, 1.4)
+        jitter = base_delay * random.uniform(0.8, 1.2)
         await asyncio.sleep(jitter)
-
-    async def human_delay(self):
-        await asyncio.sleep(random.uniform(1.5, 4.5))
 
     async def rest(self):
         await asyncio.sleep(random.uniform(300, 900))
@@ -357,14 +375,15 @@ class Publisher:
             nonlocal sent, failed
             total = len(messages)
             i = 0
-            batch_count = 0
             while i < total:
                 if job_id is not None:
                     if not await check_pause(job_id):
                         return False
+
                 batch = messages[i:i + 2]
                 try:
-                    await anti_ban.human_delay()
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+
                     if len(batch) == 2:
                         msg1, msg2 = batch
                         try:
@@ -408,12 +427,13 @@ class Publisher:
                             failed += 1
                             update_stats(user_id, False)
                             logging.error(f"send msg error: {e}")
+
                     i += 2
-                    batch_count += 1
+
                     if i < total:
-                        await anti_ban.wait_before_send(account_id, peer, delay)
-                    if batch_count > 0 and batch_count % 10 == 0:
-                        await anti_ban.rest()
+                        wait_time = delay * random.uniform(0.8, 1.2)
+                        await asyncio.sleep(wait_time)
+
                 except FloodWaitError as e:
                     await asyncio.sleep(e.seconds + 10)
                 except Exception as e:
@@ -431,12 +451,18 @@ class Publisher:
                 if job_id is not None:
                     if not await check_pause(job_id):
                         return sent, failed
+
                 ok = await send_round()
                 if not ok:
                     return sent, failed
+
                 if job_id is not None:
                     if not await check_pause(job_id):
                         return sent, failed
+
+                wait_time = delay * random.uniform(0.8, 1.2)
+                logging.info(f"التأخير بين الجولات: {wait_time:.0f} ثانية")
+                await asyncio.sleep(wait_time)
 
 
 def main_menu_kb():
@@ -445,6 +471,7 @@ def main_menu_kb():
         [InlineKeyboardButton("📂 حساباتي", callback_data="my_accounts")],
         [InlineKeyboardButton("🚀 بدء النشر", callback_data="start_publish")],
         [InlineKeyboardButton("⭐ سوبر", callback_data="super_mode")],
+        [InlineKeyboardButton("📋 النماذج الجاهزة", callback_data="preset_menu")],
         [InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -463,6 +490,7 @@ def welcome_text():
         "➕ إضافة حسابات تيليكرام\n"
         "📢 النشر التلقائي في المجموعات\n"
         "⭐ البحث الذكي بكلمة سوبر\n"
+        "📋 حفظ نماذج جاهزة\n"
         "🛡 نظام ذكي ضد الحظر\n"
         "📊 إحصائيات مفصّلة\n\n"
         "اختر من الأزرار أدناه: 👇"
@@ -1370,6 +1398,397 @@ async def stats_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 
+async def preset_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user = get_user(q.from_user.id)
+    presets = db_exec("SELECT * FROM presets WHERE user_id=? ORDER BY id DESC",
+                      (user["id"],), fetch=True)
+
+    text = "📋 النماذج الجاهزة\n━━━━━━━━━━━━━━━━━━━\n\n"
+    rows = []
+
+    if presets:
+        text += f"عدد النماذج: {len(presets)}\n\n"
+        for i, p in enumerate(presets, 1):
+            type_str = "⭐ سوبر" if p["type"] == "super" else "🎯 كروبات محددة"
+            text += f"{i}. {p['name']} - {type_str}\n"
+            rows.append([InlineKeyboardButton(f"📄 {p['name']}", callback_data=f"preset_view_{p['id']}")])
+    else:
+        text += "لا توجد نماذج محفوظة حتى الآن.\n"
+
+    rows.append([InlineKeyboardButton("➕ إضافة نموذج", callback_data="preset_add")])
+    rows.append([InlineKeyboardButton("🗑 مسح نموذج", callback_data="preset_delete_menu")])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
+
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+    return PRESET_MENU
+
+
+async def preset_add_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["preset_new"] = {}
+    await q.edit_message_text(
+        "➕ إضافة نموذج جديد\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "أرسل اسم النموذج (مثال: نموذج البيع اليومي):",
+        reply_markup=back_kb("preset_menu")
+    )
+    return PRESET_ADD_NAME
+
+
+async def preset_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()[:50]
+    if not name:
+        await update.message.reply_text("❌ اسم غير صحيح!")
+        return PRESET_ADD_NAME
+    context.user_data["preset_new"]["name"] = name
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐ سوبر (بحث تلقائي)", callback_data="preset_type_super")],
+        [InlineKeyboardButton("🎯 كروبات محددة", callback_data="preset_type_specific")]
+    ])
+    await update.message.reply_text(
+        f"✅ الاسم: {name}\n\n"
+        "اختر نوع النموذج:",
+        reply_markup=kb
+    )
+    return PRESET_ADD_TYPE
+
+
+async def preset_add_type_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "preset_type_super":
+        context.user_data["preset_new"]["type"] = "super"
+        context.user_data["preset_new"]["targets"] = []
+        await q.edit_message_text(
+            "⭐ نوع: سوبر\n\n"
+            "📤 أرسل الكليشة/الرسائل التي تريد حفظها.\n"
+            "بعد كل رسالة اضغط التالي، أو اكتب . للانتهاء:",
+            reply_markup=back_kb("preset_menu")
+        )
+        return PRESET_ADD_CONTENT
+    else:
+        context.user_data["preset_new"]["type"] = "specific"
+        await q.edit_message_text(
+            "🎯 نوع: كروبات محددة\n\n"
+            "🔗 أرسل الأهداف (رابط/آيدي/يوزر).\n"
+            "يمكنك إرسال أكثر من هدف، افصل بينهم بسطر جديد:",
+            reply_markup=back_kb("preset_menu")
+        )
+        return PRESET_ADD_TARGETS
+
+
+async def preset_add_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    targets = [t.strip() for t in text.split("\n") if t.strip()]
+    if not targets:
+        await update.message.reply_text("❌ لم ترسل أي هدف!")
+        return PRESET_ADD_TARGETS
+    context.user_data["preset_new"]["targets"] = targets
+    context.user_data["preset_new"]["messages"] = []
+    await update.message.reply_text(
+        f"✅ تم حفظ {len(targets)} هدف.\n\n"
+        "📤 أرسل الكليشة/الرسائل.\n"
+        "بعد كل رسالة اضغط التالي، أو اكتب . للانتهاء:"
+    )
+    return PRESET_ADD_CONTENT
+
+
+async def preset_add_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    text = msg.text or msg.caption or ""
+    if text.strip() == ".":
+        if not context.user_data["preset_new"].get("messages"):
+            await msg.reply_text("❌ لم ترسل أي رسالة!")
+            return PRESET_ADD_CONTENT
+        await msg.reply_text(
+            f"✅ تم حفظ {len(context.user_data['preset_new']['messages'])} رسالة.\n\n"
+            "⏱ أرسل الوقت بين الرسائل (بالثواني):\n"
+            "مثال: 60"
+        )
+        return PRESET_ADD_DELAY
+    media_type = "text"
+    media_file_id = None
+    if msg.photo:
+        media_type = "photo"
+        media_file_id = msg.photo[-1].file_id
+    elif msg.video:
+        media_type = "video"
+        media_file_id = msg.video.file_id
+    elif msg.document:
+        media_type = "document"
+        media_file_id = msg.document.file_id
+    elif msg.animation:
+        media_type = "animation"
+        media_file_id = msg.animation.file_id
+    elif msg.audio:
+        media_type = "audio"
+        media_file_id = msg.audio.file_id
+
+    if "messages" not in context.user_data["preset_new"]:
+        context.user_data["preset_new"]["messages"] = []
+
+    context.user_data["preset_new"]["messages"].append({
+        "content": text,
+        "media_type": media_type,
+        "media_file_id": media_file_id
+    })
+    n = len(context.user_data["preset_new"]["messages"])
+    await msg.reply_text(
+        f"✅ تم حفظ الرسالة رقم {n}\n\n"
+        "أرسل المزيد أو اكتب . للانتهاء."
+    )
+    return PRESET_ADD_CONTENT
+
+
+async def preset_add_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        delay = int(update.message.text.strip())
+        if delay < 5:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ أرسل رقماً صحيحاً (5 أو أكثر).")
+        return PRESET_ADD_DELAY
+    context.user_data["preset_new"]["delay"] = delay
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1️⃣ مرة واحدة", callback_data="preset_mode_once")],
+        [InlineKeyboardButton("🔄 تكرار لانهائي", callback_data="preset_mode_loop")]
+    ])
+    await update.message.reply_text(
+        "🔄 اختر نمط النشر:",
+        reply_markup=kb
+    )
+    return PRESET_ADD_MODE
+
+
+async def preset_add_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    mode = "once" if q.data == "preset_mode_once" else "loop"
+    context.user_data["preset_new"]["mode"] = mode
+
+    user = get_user(q.from_user.id)
+    p = context.user_data["preset_new"]
+
+    preset_id = db_exec(
+        "INSERT INTO presets (user_id, name, type, targets, messages, delay, mode) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            user["id"],
+            p["name"],
+            p["type"],
+            json.dumps(p.get("targets", []), ensure_ascii=False),
+            json.dumps(p.get("messages", []), ensure_ascii=False),
+            p["delay"],
+            p["mode"]
+        )
+    )
+
+    context.user_data.pop("preset_new", None)
+
+    type_str = "⭐ سوبر" if p["type"] == "super" else "🎯 كروبات محددة"
+    mode_str = "مرة واحدة" if mode == "once" else "🔄 تكرار لانهائي"
+
+    await q.edit_message_text(
+        f"✅ تم حفظ النموذج بنجاح!\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📝 الاسم: {p['name']}\n"
+        f"🏷 النوع: {type_str}\n"
+        f"📨 عدد الرسائل: {len(p.get('messages', []))}\n"
+        f"⏱ التأخير: {p['delay']} ثانية\n"
+        f"🔄 النمط: {mode_str}\n"
+        f"🆔 رقم النموذج: {preset_id}\n"
+        f"━━━━━━━━━━━━━━━━━━━",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع للنماذج", callback_data="preset_menu")]
+        ])
+    )
+    return PRESET_MENU
+
+
+async def preset_view_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    preset_id = int(q.data.split("_")[-1])
+    user = get_user(q.from_user.id)
+    rows = db_exec("SELECT * FROM presets WHERE id=? AND user_id=?",
+                   (preset_id, user["id"]), fetch=True)
+    if not rows:
+        await q.edit_message_text("❌ النموذج غير موجود!", reply_markup=back_kb("preset_menu"))
+        return PRESET_MENU
+    p = rows[0]
+
+    try:
+        targets = json.loads(p["targets"] or "[]")
+    except Exception:
+        targets = []
+    try:
+        messages = json.loads(p["messages"] or "[]")
+    except Exception:
+        messages = []
+
+    type_str = "⭐ سوبر (بحث تلقائي)" if p["type"] == "super" else "🎯 كروبات محددة"
+    mode_str = "مرة واحدة" if p["mode"] == "once" else "🔄 تكرار لانهائي"
+
+    text = (
+        f"📋 نموذج: {p['name']}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷 النوع: {type_str}\n"
+    )
+    if p["type"] == "specific":
+        text += f"🎯 الأهداف: {len(targets)}\n"
+    text += (
+        f"📨 عدد الرسائل: {len(messages)}\n"
+        f"⏱ التأخير: {p['delay']} ثانية\n"
+        f"🔄 النمط: {mode_str}\n"
+        f"🆔 رقم النموذج: {p['id']}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ تأكيد وتنفيذ النموذج", callback_data=f"preset_run_{p['id']}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="preset_menu")]
+    ])
+    await q.edit_message_text(text, reply_markup=kb)
+    return PRESET_VIEW
+
+
+async def preset_run_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    preset_id = int(q.data.split("_")[-1])
+    user = get_user(q.from_user.id)
+    accounts = db_exec(
+        "SELECT * FROM accounts WHERE user_id=? AND status='active'",
+        (user["id"],), fetch=True
+    )
+    if not accounts:
+        await q.edit_message_text(
+            "❌ تحتاج حساباً واحداً على الأقل.\nأضف حساباً أولاً.",
+            reply_markup=back_kb("preset_menu")
+        )
+        return PRESET_MENU
+    context.user_data["preset_run_id"] = preset_id
+    rows = [[InlineKeyboardButton(f"👤 {a['name']}", callback_data=f"preset_run_acc_{a['id']}")]
+            for a in accounts]
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"preset_view_{preset_id}")])
+    await q.edit_message_text(
+        "👤 اختر الحساب لتنفيذ النموذج:",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+    return PRESET_RUN_SELECT_ACCOUNT
+
+
+async def preset_run_account_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("🚀 جاري التنفيذ...")
+    acc_id = int(q.data.split("_")[-1])
+    preset_id = context.user_data.get("preset_run_id")
+    if not preset_id:
+        await q.edit_message_text("❌ لم يتم اختيار نموذج!", reply_markup=back_kb("preset_menu"))
+        return PRESET_MENU
+
+    user = get_user(q.from_user.id)
+    presets = db_exec("SELECT * FROM presets WHERE id=? AND user_id=?",
+                      (preset_id, user["id"]), fetch=True)
+    if not presets:
+        await q.edit_message_text("❌ النموذج غير موجود!", reply_markup=back_kb("preset_menu"))
+        return PRESET_MENU
+    p = presets[0]
+
+    acc = db_exec("SELECT * FROM accounts WHERE id=?", (acc_id,), fetch=True)
+    if not acc:
+        await q.edit_message_text("❌ الحساب غير موجود!", reply_markup=back_kb("preset_menu"))
+        return PRESET_MENU
+    acc = acc[0]
+
+    try:
+        messages = json.loads(p["messages"] or "[]")
+    except Exception:
+        messages = []
+    try:
+        targets = json.loads(p["targets"] or "[]")
+    except Exception:
+        targets = []
+
+    if not messages:
+        await q.edit_message_text("❌ النموذج لا يحتوي على رسائل!", reply_markup=back_kb("preset_menu"))
+        return PRESET_MENU
+
+    job_id = db_exec(
+        "INSERT INTO running_jobs (chat_id, user_id, account_id) VALUES (?,?,?)",
+        (q.message.chat_id, user["id"], acc_id)
+    )
+    running_jobs[job_id] = {"status": "running", "pause_until": None}
+
+    control_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏸ إيقاف مؤقت", callback_data=f"pause_{job_id}")],
+        [InlineKeyboardButton("⏹ إيقاف نهائي", callback_data=f"stop_{job_id}")]
+    ])
+
+    mode_str = "مرة واحدة" if p["mode"] == "once" else "🔄 تكرار لانهائي"
+    type_str = "⭐ سوبر" if p["type"] == "super" else "🎯 كروبات محددة"
+
+    await q.edit_message_text(
+        f"🚀 تنفيذ نموذج: {p['name']}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 الحساب: {acc['name']}\n"
+        f"🏷 النوع: {type_str}\n"
+        f"📝 الرسائل: {len(messages)}\n"
+        f"⏱ التأخير: {p['delay']} ثانية\n"
+        f"🔄 النمط: {mode_str}\n"
+        f"🆔 رقم المهمة: {job_id}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ جاري التنفيذ...",
+        reply_markup=control_kb
+    )
+
+    if p["type"] == "super":
+        asyncio.create_task(
+            run_super_task(q.message.chat_id, user["id"], acc, messages,
+                          p["delay"], p["mode"], job_id)
+        )
+    else:
+        asyncio.create_task(
+            run_publish_task(q.message.chat_id, user["id"], acc, messages,
+                            targets, p["delay"], p["mode"], job_id)
+        )
+    return MAIN_MENU
+
+
+async def preset_delete_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user = get_user(q.from_user.id)
+    presets = db_exec("SELECT * FROM presets WHERE user_id=? ORDER BY id DESC",
+                      (user["id"],), fetch=True)
+    if not presets:
+        await q.edit_message_text(
+            "🗑 لا توجد نماذج لحذفها.",
+            reply_markup=back_kb("preset_menu")
+        )
+        return PRESET_MENU
+    rows = [[InlineKeyboardButton(f"🗑 {p['name']}", callback_data=f"preset_del_{p['id']}")]
+            for p in presets]
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="preset_menu")])
+    await q.edit_message_text(
+        "🗑 اختر النموذج لحذفه:",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+    return PRESET_MENU
+
+
+async def preset_delete_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("🗑 تم الحذف")
+    preset_id = int(q.data.split("_")[-1])
+    user = get_user(q.from_user.id)
+    db_exec("DELETE FROM presets WHERE id=? AND user_id=?", (preset_id, user["id"]))
+    await preset_menu_cb(update, context)
+
+
 async def main_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -1418,6 +1837,15 @@ def main():
                 CallbackQueryHandler(super_mode_cb, pattern="^super_mode$"),
                 CallbackQueryHandler(super_select_account_cb, pattern="^super_acc_"),
                 CallbackQueryHandler(super_choose_mode_cb, pattern="^super_mode_"),
+                CallbackQueryHandler(preset_menu_cb, pattern="^preset_menu$"),
+                CallbackQueryHandler(preset_add_cb, pattern="^preset_add$"),
+                CallbackQueryHandler(preset_add_type_cb, pattern="^preset_type_"),
+                CallbackQueryHandler(preset_add_mode_cb, pattern="^preset_mode_"),
+                CallbackQueryHandler(preset_view_cb, pattern="^preset_view_"),
+                CallbackQueryHandler(preset_run_cb, pattern="^preset_run_"),
+                CallbackQueryHandler(preset_run_account_cb, pattern="^preset_run_acc_"),
+                CallbackQueryHandler(preset_delete_menu_cb, pattern="^preset_delete_menu$"),
+                CallbackQueryHandler(preset_delete_cb, pattern="^preset_del_"),
                 CallbackQueryHandler(stats_cb, pattern="^stats$"),
                 CallbackQueryHandler(pause_job_cb, pattern="^pause_"),
                 CallbackQueryHandler(stop_job_cb, pattern="^stop_"),
@@ -1475,6 +1903,50 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_pause_duration),
                 CallbackQueryHandler(back_to_job_cb, pattern="^back_to_job_"),
                 CallbackQueryHandler(stop_job_cb, pattern="^stop_"),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_MENU: [
+                CallbackQueryHandler(preset_menu_cb, pattern="^preset_menu$"),
+                CallbackQueryHandler(preset_add_cb, pattern="^preset_add$"),
+                CallbackQueryHandler(preset_view_cb, pattern="^preset_view_"),
+                CallbackQueryHandler(preset_run_cb, pattern="^preset_run_"),
+                CallbackQueryHandler(preset_run_account_cb, pattern="^preset_run_acc_"),
+                CallbackQueryHandler(preset_delete_menu_cb, pattern="^preset_delete_menu$"),
+                CallbackQueryHandler(preset_delete_cb, pattern="^preset_del_"),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_ADD_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, preset_add_name),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_ADD_TYPE: [
+                CallbackQueryHandler(preset_add_type_cb, pattern="^preset_type_"),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_ADD_TARGETS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, preset_add_targets),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_ADD_CONTENT: [
+                MessageHandler(filters.ALL & ~filters.COMMAND, preset_add_content),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_ADD_DELAY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, preset_add_delay),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_ADD_MODE: [
+                CallbackQueryHandler(preset_add_mode_cb, pattern="^preset_mode_"),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_VIEW: [
+                CallbackQueryHandler(preset_run_cb, pattern="^preset_run_"),
+                CallbackQueryHandler(preset_menu_cb, pattern="^preset_menu$"),
+                CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
+            ],
+            PRESET_RUN_SELECT_ACCOUNT: [
+                CallbackQueryHandler(preset_run_account_cb, pattern="^preset_run_acc_"),
+                CallbackQueryHandler(preset_view_cb, pattern="^preset_view_"),
                 CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
             ],
         },
