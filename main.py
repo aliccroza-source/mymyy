@@ -48,7 +48,7 @@ SUPER_NAME_KEYWORDS = ["سوبر", "super", "Super", "SUPER"]
     SUPER_SET_DELAY,
     SUPER_CHOOSE_MODE,
     PAUSE_INPUT,
-) = range(12)
+) = range(13)
 
 
 def init_db():
