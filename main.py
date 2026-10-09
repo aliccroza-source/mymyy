@@ -22,7 +22,6 @@ from telethon.errors import (
 BOT_TOKEN = "8787120916:AAGEw6sDiXz_SMLsoa6OtyPqNd7gxYOOq_A"
 API_ID = 36781759
 API_HASH = "31a2abacece3f047a878d001aa3fbd95"
-ADMIN_ID = 8862852738
 
 DB_PATH = "bot_data.db"
 SESSIONS_DIR = "sessions"
@@ -55,8 +54,7 @@ def init_db():
         id INTEGER PRIMARY KEY,
         telegram_id INTEGER UNIQUE,
         username TEXT,
-        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        is_admin INTEGER DEFAULT 0
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY,
@@ -118,10 +116,10 @@ def get_user(telegram_id):
     if rows:
         return rows[0]
     uid = db_exec(
-        "INSERT INTO users (telegram_id, username, is_admin) VALUES (?,?,?)",
-        (telegram_id, "", 1 if telegram_id == ADMIN_ID else 0)
+        "INSERT INTO users (telegram_id, username) VALUES (?,?)",
+        (telegram_id, "")
     )
-    return {"id": uid, "telegram_id": telegram_id, "is_admin": telegram_id == ADMIN_ID}
+    return {"id": uid, "telegram_id": telegram_id}
 
 
 def update_stats(user_id, success=True):
@@ -137,9 +135,6 @@ def update_stats(user_id, success=True):
 
 
 class AntiBan:
-    def __init__(self):
-        pass
-
     async def wait_before_send(self, account_id, peer, base_delay):
         jitter = base_delay * random.uniform(0.6, 1.4)
         await asyncio.sleep(jitter)
@@ -318,7 +313,7 @@ class Publisher:
         return sent, failed
 
 
-def main_menu_kb(is_admin=False):
+def main_menu_kb():
     rows = [
         [InlineKeyboardButton("➕ إضافة حساب", callback_data="add_account")],
         [InlineKeyboardButton("📂 حساباتي", callback_data="my_accounts")],
@@ -326,8 +321,6 @@ def main_menu_kb(is_admin=False):
         [InlineKeyboardButton("⭐ سوبر", callback_data="super_mode")],
         [InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")],
     ]
-    if is_admin:
-        rows.append([InlineKeyboardButton("👑 لوحة المالك", callback_data="admin_panel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -337,13 +330,13 @@ def back_kb(callback="main_menu"):
 
 def welcome_text():
     return (
-        "🤖 *بوت النشر التلقائي*\n"
+        "🤖 بوت النشر التلقائي\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "مرحباً بك! 👋\n\n"
         "هذا البوت يمكنك من:\n"
         "➕ إضافة حسابات تيليكرام\n"
         "📢 النشر التلقائي في المجموعات\n"
-        "⭐ البحث الذكي بكلمة \"سوبر\"\n"
+        "⭐ البحث الذكي بكلمة سوبر\n"
         "🛡 نظام ذكي ضد الحظر\n"
         "📊 إحصائيات مفصّلة\n\n"
         "اختر من الأزرار أدناه: 👇"
@@ -352,14 +345,14 @@ def welcome_text():
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_tg = update.effective_user
-    user = get_user(user_tg.id)
+    get_user(user_tg.id)
     context.user_data.clear()
     text = welcome_text()
-    kb = main_menu_kb(user["is_admin"])
+    kb = main_menu_kb()
     if update.message:
-        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+        await update.message.reply_text(text, reply_markup=kb)
     else:
-        await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(text, reply_markup=kb)
     return MAIN_MENU
 
 
@@ -375,13 +368,12 @@ async def add_account_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_account"] = {}
     context.user_data["auth_client"] = None
     await q.edit_message_text(
-        "📱 *إضافة حساب جديد*\n"
+        "📱 إضافة حساب جديد\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "أرسل رقم هاتفك بالصيغة الدولية:\n"
-        "مثال: `+9647701234567`\n\n"
+        "مثال: +9647701234567\n\n"
         "⚠️ الرقم يجب أن يكون مسجّلاً في تيليكرام.",
-        reply_markup=back_kb(),
-        parse_mode="Markdown"
+        reply_markup=back_kb()
     )
     return ADD_PHONE
 
@@ -391,8 +383,7 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not re.match(r'^\+\d{8,15}$', phone):
         await update.message.reply_text(
             "❌ صيغة الرقم غير صحيحة!\n"
-            "أرسل الرقم هكذا: `+9647701234567`",
-            parse_mode="Markdown"
+            "أرسل الرقم هكذا: +9647701234567"
         )
         return ADD_PHONE
     msg = await update.message.reply_text("⏳ جاري إرسال كود التحقق...")
@@ -404,15 +395,14 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_account"]["phone_code_hash"] = sent.phone_code_hash
         context.user_data["auth_client"] = client
         await msg.edit_text(
-            "🔐 *تم إرسال كود التحقق*\n"
+            "🔐 تم إرسال كود التحقق\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
             "أرسل الكود بالصيغة التالية:\n"
-            "`0 0 0 0 0`\n\n"
-            "⚠️ *مهم جداً:*\n"
+            "0 0 0 0 0\n\n"
+            "⚠️ مهم جداً:\n"
             "يجب أن يكون بين كل رقم ورقم فراغ\n"
             "وإلا لن يكتمل تسجيل الدخول!\n\n"
-            "📌 مثال: إذا وصلك `12345` أرسله `1 2 3 4 5`",
-            parse_mode="Markdown"
+            "📌 مثال: إذا وصلك 12345 أرسله 1 2 3 4 5"
         )
         return ADD_CODE
     except Exception as e:
@@ -436,15 +426,14 @@ async def finish_login(update: Update, context: ContextTypes.DEFAULT_TYPE,
         context.user_data.pop("auth_client", None)
         context.user_data.pop("new_account", None)
         await update.message.reply_text(
-            "✅ *تم إضافة الحساب بنجاح!*\n"
+            "✅ تم إضافة الحساب بنجاح!\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 *الاسم:* {me.first_name or 'بدون'}\n"
-            f"📱 *الرقم:* `{phone}`\n"
-            f"🆔 *الآيدي:* `{me.id}`\n"
-            f"🔗 *اليوزر:* @{me.username or 'لا يوجد'}\n\n"
+            f"👤 الاسم: {me.first_name or 'بدون'}\n"
+            f"📱 الرقم: {phone}\n"
+            f"🆔 الآيدي: {me.id}\n"
+            f"🔗 اليوزر: @{me.username or 'لا يوجد'}\n\n"
             "الحساب جاهز للنشر 🚀",
-            reply_markup=back_kb(),
-            parse_mode="Markdown"
+            reply_markup=back_kb()
         )
         return MAIN_MENU
     except Exception as e:
@@ -456,11 +445,10 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not is_valid_code_format(text):
         await update.message.reply_text(
-            "❌ *صيغة الكود خاطئة!*\n\n"
+            "❌ صيغة الكود خاطئة!\n\n"
             "يجب أن ترسل الكود بأرقام متباعدة بفراغات:\n"
-            "مثال: `1 2 3 4 5`\n\n"
-            "أعد الإرسال:",
-            parse_mode="Markdown"
+            "مثال: 1 2 3 4 5\n\n"
+            "أعد الإرسال:"
         )
         return ADD_CODE
     code = parse_code(text)
@@ -477,12 +465,12 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["new_account"]["phone"] = phone
         context.user_data["auth_client"] = client
         await update.message.reply_text(
-            "🔒 *الحساب محمي بكلمة مرور ثنائية*\n"
+            "🔒 الحساب محمي بكلمة مرور ثنائية\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
             "أرسل الآن كلمة مرور التحقق الثنائي (2FA):\n\n"
             "💡 هي كلمة المرور التي تُدخلها عند تسجيل الدخول لتيليكرام.\n"
-            "🔐 ستبقى سرية ولن تُحفظ.",
-            parse_mode="Markdown"
+            "🔐 ستبقى سرية ولن تُحفظ.\n\n"
+            "📌 اكتبها يدوياً ولا تنسخها لتفادي المسافات الزائدة."
         )
         return ADD_PASSWORD
     except PhoneCodeInvalidError:
@@ -497,7 +485,7 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    password = update.message.text.strip()
+    password = update.message.text
     client: TelegramClient = context.user_data.get("auth_client")
     phone = context.user_data.get("new_account", {}).get("phone")
     if not client or not phone:
@@ -510,13 +498,31 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await client.sign_in(password=password)
         return await finish_login(update, context, client, phone)
-    except Exception as e:
+    except SessionPasswordNeededError:
         await update.message.reply_text(
-            f"❌ كلمة المرور خاطئة!\n"
-            f"`{e}`\n\n"
-            "أعد الإرسال:",
-            parse_mode="Markdown"
+            "❌ كلمة المرور لم تُقبل من تيليكرام.\n\n"
+            "أسباب محتملة:\n"
+            "1️⃣ كلمة المرور غير صحيحة\n"
+            "2️⃣ مكتبة cryptg غير مثبتة\n"
+            "   نفّذ: pip install cryptg\n"
+            "3️⃣ أرسل الكلمة مرة أخرى بدون نسخ:"
         )
+        return ADD_PASSWORD
+    except Exception as e:
+        err = str(e)
+        if "invalid" in err.lower() or "password" in err.lower():
+            await update.message.reply_text(
+                "❌ كلمة المرور غير صحيحة\n\n"
+                "تأكد من:\n"
+                "• كتابتها يدوياً بدون نسخ ولصق\n"
+                "• عدم وجود مسافات زائدة\n"
+                "• أنها كلمة مرور 2FA الصحيحة\n\n"
+                "📌 إذا كنت متأكداً منها، ثبّت مكتبة cryptg:\n"
+                "pip install cryptg\n\n"
+                "أعد الإرسال:"
+            )
+        else:
+            await update.message.reply_text(f"❌ خطأ: {err}\n\nأعد الإرسال:")
         return ADD_PASSWORD
 
 
@@ -528,24 +534,23 @@ async def my_accounts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                       (user["id"],), fetch=True)
     if not accounts:
         await q.edit_message_text(
-            "📂 *حساباتي*\n\n"
+            "📂 حساباتي\n\n"
             "لا توجد حسابات مضافة حتى الآن.\n"
             "اضغط ➕ لإضافة حساب جديد.",
-            reply_markup=back_kb(),
-            parse_mode="Markdown"
+            reply_markup=back_kb()
         )
         return MAIN_MENU
-    text = f"📂 *حساباتك ({len(accounts)})*\n━━━━━━━━━━━━━━━━━━━\n\n"
+    text = f"📂 حساباتك ({len(accounts)})\n━━━━━━━━━━━━━━━━━━━\n\n"
     rows = []
     for i, acc in enumerate(accounts, 1):
         status_emoji = {"active": "🟢", "cooling": "🟡", "banned": "🔴"}.get(acc["status"], "⚪")
-        text += f"{i}. {status_emoji} *{acc['name']}*\n   📱 `{acc['phone']}`\n\n"
+        text += f"{i}. {status_emoji} {acc['name']}\n   📱 {acc['phone']}\n\n"
         rows.append([InlineKeyboardButton(
             f"🗑 حذف {acc['name']}",
             callback_data=f"del_acc_{acc['id']}"
         )])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
     return MAIN_MENU
 
 
@@ -575,15 +580,15 @@ async def start_publish_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not accounts:
         await q.edit_message_text(
             "❌ لا توجد حسابات نشطة.\nأضف حساباً أولاً.",
-            reply_markup=back_kb(), parse_mode="Markdown"
+            reply_markup=back_kb()
         )
         return MAIN_MENU
     rows = [[InlineKeyboardButton(f"👤 {a['name']}", callback_data=f"pub_acc_{a['id']}")]
             for a in accounts]
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     await q.edit_message_text(
-        "🚀 *بدء النشر*\n\nاختر الحساب الذي تريد النشر منه:",
-        reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+        "🚀 بدء النشر\n\nاختر الحساب الذي تريد النشر منه:",
+        reply_markup=InlineKeyboardMarkup(rows)
     )
     return SELECT_ACCOUNT
 
@@ -596,14 +601,14 @@ async def select_account_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pub_messages"] = []
     context.user_data["pub_targets"] = []
     await q.edit_message_text(
-        "📝 *أرسل الكليشة (الرسالة) التي تريد نشرها*\n\n"
+        "📝 أرسل الكليشة (الرسالة) التي تريد نشرها\n\n"
         "يمكن أن تحتوي على:\n"
         "• نص فقط\n"
         "• صورة + نص\n"
         "• فيديو + نص\n"
         "• ملف + نص\n\n"
         "بعد كل رسالة سيتم إعلامك.",
-        reply_markup=back_kb(), parse_mode="Markdown"
+        reply_markup=back_kb()
     )
     return SEND_TEMPLATE
 
@@ -618,13 +623,12 @@ async def receive_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = len(context.user_data["pub_messages"])
         await msg.reply_text(
             f"✅ تم حفظ {count} رسالة.\n\n"
-            "🔗 *أرسل رابط/آيدي الهدف:*\n\n"
+            "🔗 أرسل رابط/آيدي الهدف:\n\n"
             "يدعم:\n"
             "• رابط عام أو خاص\n"
             "• @username\n"
             "• آيدي رقمي\n\n"
-            "💡 يمكنك إرسال أكثر من هدف، افصل بينهم بسطر جديد.",
-            parse_mode="Markdown"
+            "💡 يمكنك إرسال أكثر من هدف، افصل بينهم بسطر جديد."
         )
         return SELECT_TARGETS
     media_type = "text"
@@ -654,8 +658,7 @@ async def receive_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ تم حفظ الرسالة رقم {n}\n\n"
         "هل تريد إضافة رسالة أخرى؟\n"
         "📤 أرسلها فقط\n"
-        "⌨️ أو اكتب `.` لإنهاء اختيار الكليشة",
-        parse_mode="Markdown"
+        "⌨️ أو اكتب . لإنهاء اختيار الكليشة"
     )
     return SEND_TEMPLATE
 
@@ -669,10 +672,9 @@ async def receive_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pub_targets"] = targets
     await update.message.reply_text(
         f"✅ تم حفظ {len(targets)} هدف.\n\n"
-        "⏱ *حدد الوقت بين كل رسالة ورسالة (بالثواني)*\n\n"
-        "مثال: `60` (يعني دقيقة بين كل رسالة)\n"
-        "💡 كل ما زاد الوقت، قلّ احتمال الحظر.",
-        parse_mode="Markdown"
+        "⏱ حدد الوقت بين كل رسالة ورسالة (بالثواني)\n\n"
+        "مثال: 60 (يعني دقيقة بين كل رسالة)\n"
+        "💡 كل ما زاد الوقت، قلّ احتمال الحظر."
     )
     return SET_DELAY
 
@@ -697,15 +699,15 @@ async def receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]
     ])
     await update.message.reply_text(
-        f"📋 *تأكيد العملية*\n"
+        f"📋 تأكيد العملية\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 عدد الرسائل: *{n_msgs}*\n"
-        f"🎯 عدد الأهداف: *{n_targets}*\n"
-        f"⏱ التأخير: *{delay}* ثانية\n"
-        f"🛡 الحماية الذكية: *مفعّلة*\n"
+        f"📝 عدد الرسائل: {n_msgs}\n"
+        f"🎯 عدد الأهداف: {n_targets}\n"
+        f"⏱ التأخير: {delay} ثانية\n"
+        f"🛡 الحماية الذكية: مفعّلة\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"هل تريد البدء؟",
-        reply_markup=kb, parse_mode="Markdown"
+        reply_markup=kb
     )
     return SET_DELAY
 
@@ -725,15 +727,14 @@ async def confirm_publish_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return MAIN_MENU
     acc = acc[0]
     await q.edit_message_text(
-        f"🚀 *بدأ النشر*\n"
+        f"🚀 بدأ النشر\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 الحساب: *{acc['name']}*\n"
-        f"📝 الرسائل: *{len(messages)}*\n"
-        f"🎯 الأهداف: *{len(targets)}*\n"
-        f"⏱ التأخير: *{delay}* ثانية\n"
+        f"👤 الحساب: {acc['name']}\n"
+        f"📝 الرسائل: {len(messages)}\n"
+        f"🎯 الأهداف: {len(targets)}\n"
+        f"⏱ التأخير: {delay} ثانية\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⏳ جاري التنفيذ...",
-        parse_mode="Markdown"
+        f"⏳ جاري التنفيذ..."
     )
     asyncio.create_task(
         run_publish_task(q.message.chat_id, user["id"], acc, messages, targets, delay)
@@ -751,7 +752,7 @@ async def run_publish_task(chat_id: int, user_id: int, acc: dict,
         total_sent = 0
         total_failed = 0
         for t in targets:
-            await send_msg(chat_id, f"📤 جاري النشر في: `{t}`")
+            await send_msg(chat_id, f"📤 جاري النشر في: {t}")
             sent, failed = await Publisher.publish_to_target(
                 client, t, messages, delay, acc["id"], user_id
             )
@@ -763,20 +764,19 @@ async def run_publish_task(chat_id: int, user_id: int, acc: dict,
             )
         await send_msg(
             chat_id,
-            f"🏁 *اكتمل النشر*\n"
+            f"🏁 اكتمل النشر\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"✅ نجح: {total_sent}\n"
             f"❌ فشل: {total_failed}\n"
-            f"━━━━━━━━━━━━━━━━━━━",
-            parse_mode="Markdown"
+            f"━━━━━━━━━━━━━━━━━━━"
         )
     except Exception as e:
         await send_msg(chat_id, f"❌ خطأ في المهمة: {e}")
 
 
-async def send_msg(chat_id: int, text: str, parse_mode=None):
+async def send_msg(chat_id: int, text: str):
     try:
-        await application.bot.send_message(chat_id, text, parse_mode=parse_mode)
+        await application.bot.send_message(chat_id, text)
     except Exception as e:
         logging.error(f"send_msg: {e}")
 
@@ -792,21 +792,21 @@ async def super_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not accounts:
         await q.edit_message_text(
             "❌ تحتاج حساباً واحداً على الأقل.\nأضف حساباً أولاً.",
-            reply_markup=back_kb(), parse_mode="Markdown"
+            reply_markup=back_kb()
         )
         return MAIN_MENU
     rows = [[InlineKeyboardButton(f"👤 {a['name']}", callback_data=f"super_acc_{a['id']}")]
             for a in accounts]
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")])
     await q.edit_message_text(
-        "⭐ *ميزة سوبر*\n"
+        "⭐ ميزة سوبر\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "هذه الميزة تقوم بالبحث الذكي عن:\n"
-        "• كل الكروبات/القنوات باسم \"سوبر\" أو \"Super\"\n"
+        "• كل الكروبات/القنوات باسم سوبر أو Super\n"
         "• الكروبات التي رسائلها تحتوي كلمات تجارية\n"
         "  (مقابل، بيع، شراء، اسيا، ماستر، أثير...)\n\n"
         "اختر الحساب للبحث:",
-        reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+        reply_markup=InlineKeyboardMarkup(rows)
     )
     return SELECT_ACCOUNT
 
@@ -818,10 +818,10 @@ async def super_select_account_cb(update: Update, context: ContextTypes.DEFAULT_
     context.user_data["super_account_id"] = acc_id
     context.user_data["super_messages"] = []
     await q.edit_message_text(
-        "⭐ *سوبر*\n"
+        "⭐ سوبر\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         "📤 أرسل الكليشة/الرابط الذي تريد نشره:",
-        reply_markup=back_kb(), parse_mode="Markdown"
+        reply_markup=back_kb()
     )
     return SUPER_SEND_CONTENT
 
@@ -836,8 +836,7 @@ async def super_receive_content(update: Update, context: ContextTypes.DEFAULT_TY
         await msg.reply_text(
             f"✅ تم حفظ {len(context.user_data['super_messages'])} رسالة.\n\n"
             "⏱ حدد الوقت بين الرسائل (بالثواني):\n"
-            "مثال: `30`",
-            parse_mode="Markdown"
+            "مثال: 30"
         )
         return SUPER_SET_DELAY
     media_type = "text"
@@ -859,8 +858,7 @@ async def super_receive_content(update: Update, context: ContextTypes.DEFAULT_TY
     n = len(context.user_data["super_messages"])
     await msg.reply_text(
         f"✅ تم حفظ الرسالة رقم {n}\n\n"
-        "أرسل المزيد أو اكتب `.` للانتهاء.",
-        parse_mode="Markdown"
+        "أرسل المزيد أو اكتب . للانتهاء."
     )
     return SUPER_SEND_CONTENT
 
@@ -871,7 +869,7 @@ async def super_receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE
         if delay < 5:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ أرسل رقماً صحيحاً (≥ 5).")
+        await update.message.reply_text("❌ أرسل رقماً صحيحاً (5 أو أكثر).")
         return SUPER_SET_DELAY
     acc_id = context.user_data["super_account_id"]
     messages = context.user_data["super_messages"]
@@ -883,9 +881,8 @@ async def super_receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE
         return MAIN_MENU
     acc = acc[0]
     status_msg = await update.message.reply_text(
-        "🔍 *جاري البحث الذكي...*\n\n"
-        "⏳ المرحلة 1: البحث بالاسم...",
-        parse_mode="Markdown"
+        "🔍 جاري البحث الذكي...\n\n"
+        "⏳ المرحلة 1: البحث بالاسم..."
     )
     asyncio.create_task(
         run_super_task(status_msg.chat_id, user["id"], acc, messages, delay)
@@ -900,22 +897,21 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
         if not client:
             await send_msg(chat_id, "❌ فشل الاتصال بالحساب!")
             return
-        await send_msg(chat_id, "🔍 *المرحلة 1:* البحث بالاسم...", parse_mode="Markdown")
+        await send_msg(chat_id, "🔍 المرحلة 1: البحث بالاسم...")
         name_results = await SuperSearch.search_by_name(client)
         await send_msg(
             chat_id,
-            f"✅ تم العثور على {len(name_results)} كروب/قناة باسم سوبر",
+            f"✅ تم العثور على {len(name_results)} كروب/قناة باسم سوبر"
         )
         await send_msg(
             chat_id,
-            "🔍 *المرحلة 2:* فحص الرسائل...\n"
-            "⏳ (قد يستغرق وقتاً طويلاً)",
-            parse_mode="Markdown"
+            "🔍 المرحلة 2: فحص الرسائل...\n"
+            "⏳ (قد يستغرق وقتاً طويلاً)"
         )
         msg_results = await SuperSearch.search_in_messages(client)
         await send_msg(
             chat_id,
-            f"✅ تم العثور على {len(msg_results)} كروب بناءً على الرسائل",
+            f"✅ تم العثور على {len(msg_results)} كروب بناءً على الرسائل"
         )
         all_targets = {}
         for r in name_results + msg_results:
@@ -926,9 +922,8 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
             return
         await send_msg(
             chat_id,
-            f"📊 *إجمالي الأهداف: {len(targets)}*\n\n"
-            f"⏳ جاري بدء النشر...",
-            parse_mode="Markdown"
+            f"📊 إجمالي الأهداف: {len(targets)}\n\n"
+            f"⏳ جاري بدء النشر..."
         )
         total_sent = 0
         total_failed = 0
@@ -951,13 +946,12 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
                 continue
         await send_msg(
             chat_id,
-            f"🏁 *اكتمل النشر*\n"
+            f"🏁 اكتمل النشر\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 الأهداف: {len(targets)}\n"
             f"✅ نجح: {total_sent}\n"
             f"❌ فشل: {total_failed}\n"
-            f"━━━━━━━━━━━━━━━━━━━",
-            parse_mode="Markdown"
+            f"━━━━━━━━━━━━━━━━━━━"
         )
     except Exception as e:
         await send_msg(chat_id, f"❌ خطأ: {e}")
@@ -978,44 +972,19 @@ async def stats_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_ok = total["ok"] or 0
     total_fail = total["fail"] or 0
     await q.edit_message_text(
-        f"📊 *إحصائياتك*\n"
+        f"📊 إحصائياتك\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 الحسابات: *{accounts_count}*\n"
+        f"👤 الحسابات: {accounts_count}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 *اليوم:*\n"
+        f"📅 اليوم:\n"
         f"   ✅ نجح: {today_ok}\n"
         f"   ❌ فشل: {today_fail}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 *الإجمالي:*\n"
+        f"📈 الإجمالي:\n"
         f"   ✅ نجح: {total_ok}\n"
         f"   ❌ فشل: {total_fail}\n"
         f"━━━━━━━━━━━━━━━━━━━",
-        reply_markup=back_kb(), parse_mode="Markdown"
-    )
-    return MAIN_MENU
-
-
-async def admin_panel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.from_user.id != ADMIN_ID:
-        await q.answer("❌ هذه اللوحة للمالك فقط!", show_alert=True)
-        return MAIN_MENU
-    users = db_exec("SELECT COUNT(*) as c FROM users", fetch=True)[0]["c"]
-    accounts = db_exec("SELECT COUNT(*) as c FROM accounts", fetch=True)[0]["c"]
-    total = db_exec("SELECT SUM(sent_ok) as ok, SUM(sent_fail) as fail FROM stats", fetch=True)[0]
-    total_ok = total["ok"] or 0
-    total_fail = total["fail"] or 0
-    await q.edit_message_text(
-        f"👑 *لوحة تحكم المالك*\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 المستخدمون: *{users}*\n"
-        f"📱 الحسابات: *{accounts}*\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ إجمالي النجاح: *{total_ok}*\n"
-        f"❌ إجمالي الفشل: *{total_fail}*\n"
-        f"━━━━━━━━━━━━━━━━━━━",
-        reply_markup=back_kb(), parse_mode="Markdown"
+        reply_markup=back_kb()
     )
     return MAIN_MENU
 
@@ -1032,11 +1001,10 @@ async def main_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
             context.user_data.pop(key, None)
-    user = get_user(q.from_user.id)
+    get_user(q.from_user.id)
     await q.edit_message_text(
         welcome_text(),
-        reply_markup=main_menu_kb(user["is_admin"]),
-        parse_mode="Markdown"
+        reply_markup=main_menu_kb()
     )
     return MAIN_MENU
 
@@ -1068,7 +1036,6 @@ def main():
                 CallbackQueryHandler(super_mode_cb, pattern="^super_mode$"),
                 CallbackQueryHandler(super_select_account_cb, pattern="^super_acc_"),
                 CallbackQueryHandler(stats_cb, pattern="^stats$"),
-                CallbackQueryHandler(admin_panel_cb, pattern="^admin_panel$"),
                 CallbackQueryHandler(main_menu_cb, pattern="^main_menu$"),
                 MessageHandler(filters.Regex(r'^\(s\)$'), s_trigger),
             ],
