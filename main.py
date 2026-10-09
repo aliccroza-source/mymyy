@@ -58,7 +58,7 @@ SUPER_NAME_KEYWORDS = ["سوبر", "super", "Super", "SUPER"]
     PRESET_ADD_MODE,
     PRESET_VIEW,
     PRESET_RUN_SELECT_ACCOUNT,
-) = range(21)
+) = range(22)
 
 
 def init_db():
