@@ -33,7 +33,7 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 SUPER_KEYWORDS = [
     "مقابل", "بيع", "شراء", "اسيا", "آسيا",
     "ماستر", "اثير", "أثير", "مميزة", "مميزه",
-    "هدايه", "هداية", "ارقام", "أرقام", "مطلوب"
+    "هدايه", "هداية", "ارقام", "أرقام", "مطلوب", "تون"،
 ]
 SUPER_NAME_KEYWORDS = ["سوبر", "super", "Super", "SUPER"]
 
@@ -489,7 +489,7 @@ def welcome_text():
         "هذا البوت يمكنك من:\n"
         "➕ إضافة حسابات تيليكرام\n"
         "📢 النشر التلقائي في المجموعات\n"
-        "⭐ البحث الذكي بكلمة سوبر\n"
+        "⭐ البحث الذكي بكلمة سوبر (بث متزامن)\n"
         "📋 حفظ نماذج جاهزة\n"
         "🛡 نظام ذكي ضد الحظر\n"
         "📊 إحصائيات مفصّلة\n\n"
@@ -1135,6 +1135,7 @@ async def super_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• كل المجموعات باسم سوبر أو Super\n"
         "• المجموعات التي رسائلها تحتوي كلمات تجارية\n"
         "  (مقابل، بيع، شراء، اسيا، ماستر، أثير...)\n\n"
+        "📡 البث متزامن: كل المجموعات تستقبل في نفس الوقت\n"
         "⚠️ تستثني: القنوات والمحادثات الخاصة\n\n"
         "اختر الحساب للبحث:",
         reply_markup=InlineKeyboardMarkup(rows)
@@ -1166,8 +1167,8 @@ async def super_receive_content(update: Update, context: ContextTypes.DEFAULT_TY
             return SUPER_SEND_CONTENT
         await msg.reply_text(
             f"✅ تم حفظ {len(context.user_data['super_messages'])} رسالة.\n\n"
-            "⏱ حدد الوقت بين الرسائل (بالثواني):\n"
-            "مثال: 30"
+            "⏱ حدد الوقت بين كل جولة (بالثواني):\n"
+            "مثال: 60"
         )
         return SUPER_SET_DELAY
     media_type = "text"
@@ -1245,11 +1246,11 @@ async def super_choose_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYP
     mode_str = "مرة واحدة" if mode == "once" else "🔄 تكرار لانهائي"
 
     await q.edit_message_text(
-        f"⭐ بدأ النشر الذكي\n"
+        f"⭐ بدأ النشر الذكي (بث متزامن)\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"👤 الحساب: {acc['name']}\n"
         f"📝 الرسائل: {len(messages)}\n"
-        f"⏱ التأخير: {delay} ثانية\n"
+        f"⏱ التأخير بين الجولات: {delay} ثانية\n"
         f"🔄 النمط: {mode_str}\n"
         f"🆔 رقم المهمة: {job_id}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -1300,64 +1301,170 @@ async def run_super_task(chat_id: int, user_id: int, acc: dict,
             chat_id,
             f"📊 إجمالي المجموعات: {len(targets)}\n"
             f"📝 عدد الرسائل في الكليشة: {len(messages)}\n"
+            f"⏱ التأخير بين الجولات: {delay} ثانية\n"
             f"🔄 النمط: {'مرة واحدة' if mode == 'once' else '🔄 تكرار لانهائي'}\n\n"
-            f"⏳ جاري بدء النشر..."
+            f"⏳ جاري بدء البث المتزامن..."
         )
 
-        total_sent = 0
-        total_failed = 0
-        success_targets = 0
-        failed_targets = 0
-
-        for i, target in enumerate(targets, 1):
-            if job_id is not None and job_id in running_jobs:
-                if running_jobs[job_id]["status"] == "stopped":
-                    await send_msg(
-                        chat_id,
-                        f"⏹ تم إيقاف النشر نهائياً\n"
-                        f"📨 رسائل ناجحة: {total_sent}\n"
-                        f"📭 رسائل فاشلة: {total_failed}"
-                    )
-                    del running_jobs[job_id]
-                    return
-
+        peers = []
+        for t in targets:
             try:
-                peer_entity = await client.get_entity(target["id"])
-                sent, failed = await Publisher.publish_to_target(
-                    client, peer_entity, messages, delay, acc["id"], user_id, job_id, mode
-                )
-                total_sent += sent
-                total_failed += failed
-
-                if sent > 0:
-                    success_targets += 1
-                else:
-                    failed_targets += 1
-
-                if i % 5 == 0 or i == len(targets):
-                    await send_msg(
-                        chat_id,
-                        f"📊 التقدم: {i}/{len(targets)}\n"
-                        f"   ✅ نجحت: {success_targets}\n"
-                        f"   🚫 فشلت: {failed_targets}"
-                    )
+                peer = await client.get_entity(t["id"])
+                peers.append({"peer": peer, "name": t["name"]})
             except Exception as e:
-                logging.error(f"super target error: {e}")
-                failed_targets += 1
-                continue
+                logging.error(f"get_entity error for {t['name']}: {e}")
+
+        if not peers:
+            await send_msg(chat_id, "❌ لم يتم الوصول لأي مجموعة!")
+            if job_id in running_jobs:
+                del running_jobs[job_id]
+            return
 
         await send_msg(
             chat_id,
-            f"🏁 اكتمل النشر\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 المجموعات الكلية: {len(targets)}\n"
-            f"✅ مجموعات نجحت: {success_targets}\n"
-            f"🚫 مجموعات فشلت: {failed_targets}\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"📨 رسائل ناجحة: {total_sent}\n"
-            f"📭 رسائل فاشلة: {total_failed}\n"
-            f"━━━━━━━━━━━━━━━━━━━"
+            f"✅ تم تجهيز {len(peers)} مجموعة للبث المتزامن"
         )
+
+        sent = 0
+        failed = 0
+
+        async def send_to_peer(peer_info):
+            nonlocal sent, failed
+            peer = peer_info["peer"]
+            try:
+                await client.action(peer, 'typing')
+            except Exception:
+                pass
+            try:
+                total = len(messages)
+                i = 0
+                while i < total:
+                    batch = messages[i:i + 2]
+                    if len(batch) == 2:
+                        msg1, msg2 = batch
+                        try:
+                            if msg1["media_type"] == "text":
+                                await client.send_message(peer, msg1["content"])
+                            else:
+                                await client.send_file(peer, msg1["media_file_id"],
+                                                      caption=msg1["content"] or "")
+                            sent += 1
+                            update_stats(user_id, True)
+                        except Exception as e:
+                            failed += 1
+                            update_stats(user_id, False)
+                            logging.error(f"send error: {e}")
+
+                        await asyncio.sleep(random.uniform(0.8, 2.0))
+
+                        try:
+                            if msg2["media_type"] == "text":
+                                await client.send_message(peer, msg2["content"])
+                            else:
+                                await client.send_file(peer, msg2["media_file_id"],
+                                                      caption=msg2["content"] or "")
+                            sent += 1
+                            update_stats(user_id, True)
+                        except Exception as e:
+                            failed += 1
+                            update_stats(user_id, False)
+                            logging.error(f"send error: {e}")
+                    else:
+                        msg1 = batch[0]
+                        try:
+                            if msg1["media_type"] == "text":
+                                await client.send_message(peer, msg1["content"])
+                            else:
+                                await client.send_file(peer, msg1["media_file_id"],
+                                                      caption=msg1["content"] or "")
+                            sent += 1
+                            update_stats(user_id, True)
+                        except Exception as e:
+                            failed += 1
+                            update_stats(user_id, False)
+                            logging.error(f"send error: {e}")
+                    i += 2
+                return True
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 10)
+                return False
+            except Exception as e:
+                failed += 1
+                logging.error(f"peer error: {e}")
+                return False
+
+        async def broadcast_round():
+            await asyncio.gather(*[send_to_peer(p) for p in peers],
+                                return_exceptions=True)
+
+        if mode == "once":
+            await send_msg(
+                chat_id,
+                f"🚀 بدء البث المتزامن في {len(peers)} مجموعة..."
+            )
+            await broadcast_round()
+            await send_msg(
+                chat_id,
+                f"🏁 اكتمل البث\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 المجموعات: {len(peers)}\n"
+                f"📨 رسائل ناجحة: {sent}\n"
+                f"📭 رسائل فاشلة: {failed}\n"
+                f"━━━━━━━━━━━━━━━━━━━"
+            )
+        else:
+            round_num = 0
+            while True:
+                if job_id is not None:
+                    if not await check_pause(job_id):
+                        await send_msg(
+                            chat_id,
+                            f"⏹ تم إيقاف البث\n"
+                            f"📨 رسائل ناجحة: {sent}\n"
+                            f"📭 رسائل فاشلة: {failed}"
+                        )
+                        if job_id in running_jobs:
+                            del running_jobs[job_id]
+                        return
+
+                round_num += 1
+                sent_before = sent
+                failed_before = failed
+
+                await send_msg(
+                    chat_id,
+                    f"🔄 الجولة #{round_num} - بدء البث في {len(peers)} مجموعة..."
+                )
+
+                await broadcast_round()
+
+                round_sent = sent - sent_before
+                round_failed = failed - failed_before
+
+                await send_msg(
+                    chat_id,
+                    f"✅ اكتملت الجولة #{round_num}\n"
+                    f"   📨 نجح: {round_sent}\n"
+                    f"   📭 فشل: {round_failed}\n"
+                    f"   ⏳ الانتظار {delay} ثانية للجولة التالية..."
+                )
+
+                if job_id is not None:
+                    if not await check_pause(job_id):
+                        await send_msg(
+                            chat_id,
+                            f"⏹ تم إيقاف البث\n"
+                            f"📨 رسائل ناجحة: {sent}\n"
+                            f"📭 رسائل فاشلة: {failed}"
+                        )
+                        if job_id in running_jobs:
+                            del running_jobs[job_id]
+                        return
+
+                wait_time = delay * random.uniform(0.8, 1.2)
+                logging.info(f"التأخير بين الجولات: {wait_time:.0f} ثانية")
+                await asyncio.sleep(wait_time)
+
         if job_id in running_jobs:
             del running_jobs[job_id]
     except Exception as e:
